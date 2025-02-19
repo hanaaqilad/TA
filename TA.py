@@ -131,7 +131,24 @@ def rag_pipeline(query_text):
     context = " ".join(retrieved_docs[0]) if retrieved_docs else "No relevant documents found."
 
     # Step 2: Send the query along with the context to Ollama
-    augmented_prompt = f"Context: {context}\n\nQuestion: {query_text}\nAnswer:"
+    augmented_prompt = f"""
+    You are an expert AI assistant specializing in answering user queries based on the given context or knowledge base (documents).
+    Your responses should be clear, concise, and directly related to the context provided.
+
+    Context:
+    {context}
+
+    Question:
+    {query_text}
+
+    Guidelines:
+    - Answer concisely but with enough details.
+    - If the context does not contain the answer, state that explicitly.
+    - If necessary, provide additional insights based on general knowledge.
+
+    Answer:
+    """
+    # f"Context: {context}\n\nQuestion: {query_text}\nAnswer:"
     print("######## Augmented Prompt ########")
     print(augmented_prompt)
 
@@ -140,6 +157,6 @@ def rag_pipeline(query_text):
 
 # Example usage
 # Define a query to test the RAG pipeline
-query = "Which faculty ranked 1st in the world for computer science?"  # Change the query as needed
+query = "Who is the dean of Fasilkom UI?" 
 response = rag_pipeline(query)
 print("######## Response from LLM ########\n", response)
