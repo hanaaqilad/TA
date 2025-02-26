@@ -3,6 +3,7 @@ from langchain_ollama import OllamaEmbeddings, OllamaLLM
 import chromadb
 import os
 import shutil
+import pypdf  # Library untuk membaca PDF
 
 # Define the LLM model to be used
 llm_model = "llama3.1:8b"
@@ -18,19 +19,19 @@ if os.path.exists(chroma_db_path):
 # Reinitialize ChromaDB client with a fresh database
 chroma_client = chromadb.PersistentClient(path=chroma_db_path)
 
-# Define a custom embedding function for ChromaDB using Ollama
 class ChromaDBEmbeddingFunction:
-    """
-    Custom embedding function for ChromaDB using embeddings from Ollama.
-    """
     def __init__(self, langchain_embeddings):
         self.langchain_embeddings = langchain_embeddings
 
     def __call__(self, input):
-        # Ensure the input is in a list format for processing
         if isinstance(input, str):
             input = [input]
-        return self.langchain_embeddings.embed_documents(input)
+        embeddings = self.langchain_embeddings.embed_documents(input)
+        
+        if isinstance(embeddings, list) and isinstance(embeddings[0], float):
+            embeddings = [embeddings]  # Convert single vector into list of lists
+        
+        return embeddings
 
 # Initialize the embedding function with Ollama embeddings
 embedding = ChromaDBEmbeddingFunction(
@@ -45,58 +46,70 @@ collection_name = "rag_collection_demo"
 collection = chroma_client.get_or_create_collection(
     name=collection_name,
     metadata={"description": "A collection for RAG with Ollama - Demo1"},
-    embedding_function=embedding  # Use the custom embedding function,
+    embedding_function=embedding  # Use the custom embedding function
 )
 
-# Function to add documents to the ChromaDB collection
-def add_documents_to_collection(documents, ids):
+def extract_text_from_pdf(pdf_path):
+    reader = pypdf.PdfReader(pdf_path)
+    text = ""
+    for page in reader.pages:
+        extracted_text = page.extract_text()
+        text += extracted_text + "\n" if extracted_text else ""  
+    return text.strip()
+
+def add_pdf_to_collection(pdf_path, doc_id):
+    text = extract_text_from_pdf(pdf_path)
+    
+    if not text:
+        print(f"⚠️ No text extracted from {pdf_path}. Skipping.")
+        return
+    
+    # Debug: Cek apakah embeddings bisa dibuat
+    try:
+        embeddings = embedding([text])
+        if not embeddings:
+            print(f"⚠️ Embeddings failed for {doc_id}. Skipping.")
+            return
+    except Exception as e:
+        print(f"❌ Error generating embeddings for {doc_id}: {e}")
+        return
+
+    collection.add(documents=[text], ids=[doc_id])
+    print(f"✅ PDF '{doc_id}' added to ChromaDB.")
+    
+    # Cek jumlah dokumen setelah ditambahkan
+    all_docs = collection.get()
+    print("📌 Total documents in collection:", len(all_docs["ids"]))
+    print("📝 Stored document IDs:", all_docs["ids"])
+
+def process_pdf_file(pdf_path):
     """
-    Add documents to the ChromaDB collection.
+    Process a single PDF file and add it to ChromaDB.
     
     Args:
-        documents (list of str): The documents to add.
-        ids (list of str): Unique IDs for the documents.
+        pdf_path (str): Path to the PDF file.
     """
-    collection.add(
-        documents=documents,
-        ids=ids
-    )
+    if not os.path.exists(pdf_path):
+        print(f"⚠️ File {pdf_path} not found!")
+        return
 
-# Example: Add sample documents to the collection
-documents = [
-    "Artificial intelligence is the simulation of human intelligence processes by machines.",
-    "Python is a programming language that lets you work quickly and integrate systems more effectively.",
-    "ChromaDB is a vector database designed for AI applications.",
-    "Fasilkom UI is located in West Jakarta.",
-    "Azmi Rahmadisha is the dean of Fasilkom UI.",
-    "Fasilkom UI was established in 1945. It is the oldest computer science faculty in Indonesia.",
-    "Fasilkom UI is ranked 1st in the world for computer science majors.",
-]
+    doc_id = os.path.basename(pdf_path).replace(".pdf", "")  # Generate unique ID from filename
+    add_pdf_to_collection(pdf_path, doc_id)
 
-doc_ids = ["doc1","doc2","doc3","doc4","doc5","doc6","doc7"]
+# Example usage: Process all PDFs in 'data/pdf_documents' folder
+pdf_path = os.path.join(os.getcwd(), "reg_knowledge_base.pdf")
+if os.path.exists(pdf_path):
+    process_pdf_file(pdf_path)
 
-# Documents only need to be added once or whenever an update is required. 
-# This line of code is included for demonstration purposes:
-add_documents_to_collection(documents, doc_ids)
-
-# Function to query the ChromaDB collection
-def query_chromadb(query_text, n_results=1):
-    """
-    Query the ChromaDB collection for relevant documents.
-    
-    Args:
-        query_text (str): The input query.
-        n_results (int): The number of top results to return.
-    
-    Returns:
-        list of dict: The top matching documents and their metadata.
-    """
+def query_chromadb(query_text, n_results=3):
     results = collection.query(
         query_texts=[query_text],
         n_results=n_results
     )
-
-    return results["documents"], results["metadatas"]
+    
+    print("🔖 Metadata:", results.get("metadatas", []))  
+    print("📌 Retrieved IDs:", results.get("ids", []))  # Debug: lihat dokumen yang diambil
+    return results.get("documents", []), results.get("metadatas", [])
 
 # Function to interact with the Ollama LLM
 def query_ollama(prompt):
@@ -128,7 +141,7 @@ def rag_pipeline(query_text):
     print("######## RAG PIPELINE ########")
     print(retrieved_docs)
     print(metadata)
-    context = " ".join(retrieved_docs[0]) if retrieved_docs else "No relevant documents found."
+    context = " ".join([" ".join(doc) for doc in retrieved_docs]) if retrieved_docs else "No relevant documents found."
 
     # Step 2: Send the query along with the context to Ollama
     augmented_prompt = f"""
@@ -148,7 +161,6 @@ def rag_pipeline(query_text):
 
     Answer:
     """
-    # f"Context: {context}\n\nQuestion: {query_text}\nAnswer:"
     print("######## Augmented Prompt ########")
     print(augmented_prompt)
 
@@ -157,6 +169,6 @@ def rag_pipeline(query_text):
 
 # Example usage
 # Define a query to test the RAG pipeline
-query = "Who is the dean of Fasilkom UI?" 
+query = "What NIST Cybersecurity Framework focuses on?" 
 response = rag_pipeline(query)
 print("######## Response from LLM ########\n", response)
