@@ -1,7 +1,7 @@
 import os
 import shutil
 import chromadb
-import PyPDF2
+import pypdf
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
 
 # Model & database setup
@@ -36,7 +36,7 @@ import re
 def extract_knowledge_from_pdf(pdf_path):
     knowledge_base = []
     with open(pdf_path, "rb") as file:
-        reader = PyPDF2.PdfReader(file)
+        reader = pypdf.PdfReader(file)
         for page_num, page in enumerate(reader.pages):
             raw_text = page.extract_text()
             print(f"📄 Page {page_num + 1} extracted text (before processing):\n{raw_text}\n{'-'*40}")
@@ -59,7 +59,7 @@ def extract_knowledge_from_pdf(pdf_path):
 
     return knowledge_base
 
-pdf_path = os.path.join(os.getcwd(), "qa_knowledge_base.pdf")
+pdf_path = os.path.join(os.getcwd(), "data/pdf/qa_knowledge_base.pdf")
 print(f"📂 Checking PDF path: {pdf_path}")
 
 knowledge_base = extract_knowledge_from_pdf(pdf_path)
