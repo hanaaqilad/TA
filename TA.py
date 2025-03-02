@@ -3,6 +3,8 @@ import chromadb
 import os
 import shutil
 import pypdf  
+import re
+import json
 
 # Define the LLM model to be used
 llm_model = "llama3.1:8b"
@@ -37,11 +39,24 @@ embedding = ChromaDBEmbeddingFunction(
     )
 )
 
-# Define a collection for the RAG workflow
-collection_name = "rag_collection_demo"
-collection = chroma_client.get_or_create_collection(
-    name=collection_name,
-    metadata={"description": "A collection for RAG with Ollama - Demo"},
+# # Define a collection for the RAG workflow
+# collection_name = "rag_collection_demo"
+# collection = chroma_client.get_or_create_collection(
+#     name=collection_name,
+#     metadata={"description": "A collection for RAG with Ollama - Demo"},
+#     embedding_function=embedding  
+# )
+
+# Define collections for different knowledge bases
+general_collection = chroma_client.get_or_create_collection(
+    name="general_knowledge_base",
+    metadata={"description": "General cybersecurity knowledge base"},
+    embedding_function=embedding  
+)
+
+risk_assessment_collection = chroma_client.get_or_create_collection(
+    name="qa_knowledge_base",
+    metadata={"description": "Risk assessment knowledge base"},
     embedding_function=embedding  
 )
 
@@ -53,28 +68,82 @@ def extract_text_from_pdf(pdf_path):
         text += extracted_text + "\n" if extracted_text else ""  
     return text.strip()
 
-def add_pdf_to_collection(pdf_path, doc_id):
-    text = extract_text_from_pdf(pdf_path)
-    
-    if not text:
-        print(f"⚠️ No text extracted from {pdf_path}. Skipping.")
-        return
-    
-    try:
-        embeddings = embedding([text])
-        if not embeddings:
-            print(f"⚠️ Embeddings failed for {doc_id}. Skipping.")
-            return
-    except Exception as e:
-        print(f"❌ Error generating embeddings for {doc_id}: {e}")
-        return
+def extract_qa_from_pdf(pdf_path):
+    knowledge_base = []
+    with open(pdf_path, "rb") as file:
+        reader = pypdf.PdfReader(file)
+        for page in reader.pages:
+            raw_text = page.extract_text()
+            if raw_text:
+                text = " ".join(raw_text.split("\n"))
+                pattern = r"Question:\s*(.*?)\?\s*Risk:\s*\{'yes':\s*'(.*?)',\s*'no':\s*'(.*?)'\}"
+                matches = re.findall(pattern, text)
+                for match in matches:
+                    question, yes_risk, no_risk = match
+                    knowledge_base.append({
+                        "question": question.strip() + "?",
+                        "risk": {"yes": yes_risk.strip(), "no": no_risk.strip()}
+                    })
+    return knowledge_base
 
-    collection.add(documents=[text], ids=[doc_id])
-    print(f"✅ PDF '{doc_id}' added to ChromaDB.")
+def add_pdf_to_collection(pdf_path, doc_id):
+    if "qa_knowledge_base" in doc_id:
+        knowledge_base = extract_qa_from_pdf(pdf_path)
+        if not knowledge_base:
+            print(f"⚠️ No QA extracted from {pdf_path}. Skipping.")
+            return
+        for i, item in enumerate(knowledge_base):
+            risk_assessment_collection.add(documents=[item["question"]], 
+                                           ids=[f"{doc_id}_{i}"], 
+                                           metadatas=[{"risk": json.dumps(item["risk"])}])
+            # print(f"✅ QA '{item['question']}' added to risk assessment collection.")
+
+        all_docs = risk_assessment_collection.get()
+        print("📌 Total QA in QA collection:", len(all_docs["ids"]))
+        print("📝 Stored QA IDs:", all_docs["ids"])
+
+    else:
+        text = extract_text_from_pdf(pdf_path)
+        if not text:
+            print(f"⚠️ No text extracted from {pdf_path}. Skipping.")
+            return
+        try:
+            embeddings = embedding([text])
+            if not embeddings:
+                print(f"⚠️ Embeddings failed for {doc_id}. Skipping.")
+                return
+        except Exception as e:
+            print(f"❌ Error generating embeddings for {doc_id}: {e}")
+            return
+        general_collection.add(documents=[text], ids=[doc_id])
+        print(f"✅ PDF '{doc_id}' added to general collection.")
+
+        all_docs = general_collection.get()
+        print("📌 Total documents in general collection:", len(all_docs["ids"]))
+        print("📝 Stored document IDs:", all_docs["ids"])
+
+# def add_pdf_to_collection(pdf_path, doc_id):
+#     text = extract_text_from_pdf(pdf_path)
     
-    all_docs = collection.get()
-    print("📌 Total documents in collection:", len(all_docs["ids"]))
-    print("📝 Stored document IDs:", all_docs["ids"])
+#     if not text:
+#         print(f"⚠️ No text extracted from {pdf_path}. Skipping.")
+#         return
+    
+#     try:
+#         embeddings = embedding([text])
+#         if not embeddings:
+#             print(f"⚠️ Embeddings failed for {doc_id}. Skipping.")
+#             return
+#     except Exception as e:
+#         print(f"❌ Error generating embeddings for {doc_id}: {e}")
+#         return
+
+#     collection.add(documents=[text], ids=[doc_id])
+#     print(f"✅ PDF '{doc_id}' added to ChromaDB.")
+    
+#     all_docs = collection.get()
+#     print("📌 Total documents in collection:", len(all_docs["ids"]))
+#     print("📝 Stored document IDs:", all_docs["ids"])
 
 def process_pdf_file(pdf_path):
     if not os.path.exists(pdf_path):
@@ -84,6 +153,7 @@ def process_pdf_file(pdf_path):
     doc_id = os.path.basename(pdf_path).replace(".pdf", "")  
     add_pdf_to_collection(pdf_path, doc_id)
 
+
 # Example usage: Process all PDFs in 'data/pdf' folder
 pdf_path = os.path.join(os.getcwd(), "data/pdf")
 for filename in os.listdir(pdf_path):
@@ -91,7 +161,60 @@ for filename in os.listdir(pdf_path):
     if os.path.isfile(file_path) and filename.lower().endswith(".pdf"):
         process_pdf_file(file_path)
 
-def query_chromadb(query_text, n_results=3):
+def assess_risk(user_answers):
+    risk_score = 0
+    risk_weights = {"low": 0, "moderate": 1, "high": 2}
+    
+    all_docs = risk_assessment_collection.get()
+    metadatas = all_docs.get("metadatas", [])
+    
+    for i, ans in enumerate(user_answers):
+        if i >= len(metadatas):
+            continue  # Skip if metadata index is out of range
+        
+        try:
+            risk_data = json.loads(metadatas[i].get("risk", "{}"))
+            risk_category = risk_data.get(ans.lower(), "moderate")
+        except json.JSONDecodeError:
+            risk_category = "moderate"
+        
+        risk_score += risk_weights.get(risk_category.lower(), 1)
+    
+    if risk_score >= len(user_answers) * 1.5:
+        return "HIGH"
+    elif risk_score >= len(user_answers) * 0.5:
+        return "MODERATE"
+    else:
+        return "LOW"
+    
+    # risk_score = 0
+    # risk_weights = {"low": 0, "moderate": 1, "high": 2}
+
+    # for i, ans in enumerate(user_answers):
+    #     doc = risk_assessment_collection.get(ids=[str(i)])
+        
+    #     if "metadatas" in doc and doc["metadatas"]:
+    #         try:
+    #             risk_data = json.loads(doc["metadatas"][0]["risk"])
+    #             risk_category = risk_data.get(ans.lower(), "moderate")
+    #         except json.JSONDecodeError:
+    #             risk_category = "moderate"
+    #     else:
+    #         risk_category = "moderate"
+
+    #     risk_score += risk_weights.get(risk_category.lower(), 1)  # Default moderate jika tidak ditemukan
+
+    # # Tentukan risk level berdasarkan skor total
+    # if risk_score >= len(user_answers) * 1.5:  # Lebih dari 75% pertanyaan berisiko tinggi
+    #     return "HIGH"
+    # elif risk_score >= len(user_answers) * 0.5:  # Lebih dari 25% pertanyaan berisiko sedang atau tinggi
+    #     return "MODERATE"
+    # else:
+    #     return "LOW"
+    
+
+
+def query_chromadb(collection, query_text, n_results=3):
     results = collection.query(
         query_texts=[query_text],
         n_results=n_results
@@ -106,7 +229,7 @@ def query_ollama(prompt):
     return llm.invoke(prompt)
 
 # RAG pipeline: Combine ChromaDB and Ollama for RAG
-def rag_pipeline(query_text):
+def rag_pipeline(collection, query_text):
     """
     Perform Retrieval-Augmented Generation (RAG) by combining ChromaDB and Ollama.
     
@@ -117,7 +240,7 @@ def rag_pipeline(query_text):
         str: The generated response from Ollama augmented with retrieved context.
     """
     # Step 1: Retrieve relevant documents from ChromaDB
-    retrieved_docs, metadata = query_chromadb(query_text)
+    retrieved_docs, metadata = query_chromadb(collection, query_text)
     context = " ".join([" ".join(doc) for doc in retrieved_docs]) if retrieved_docs else "No relevant documents found."
 
     # print("######## RAG PIPELINE ########")
@@ -156,16 +279,15 @@ def rag_pipeline(query_text):
 # response = rag_pipeline(query)
 # print("######## Response from LLM ########\n", response)
 
-
-def chatbot():
-    print("🟢 RAG Chatbot is running. Type 'exit' to quit.")
-    while True:
-        user_input = input("👤 You: ")
-        if user_input.lower() == "exit":
-            print("🛑 Chatbot session ended.")
-            break
-        response = rag_pipeline(user_input)
-        print("🤖 Chatbot:", response, "\n")
+# def chatbot():
+#     print("🟢 RAG Chatbot is running. Type 'exit' to quit.")
+#     while True:
+#         user_input = input("👤 You: ")
+#         if user_input.lower() == "exit":
+#             print("🛑 Chatbot session ended.")
+#             break
+#         response = rag_pipeline(user_input)
+#         print("🤖 Chatbot:", response, "\n")
 
 def chatbot():
     print("🤖 Welcome! Choose an option:")
@@ -181,10 +303,45 @@ def chatbot():
             if user_input.lower() == "exit":
                 print("🛑 Chatbot session ended.")
                 break
-            response = rag_pipeline(user_input)
+            response = rag_pipeline(general_collection, user_input)
             print("🤖 Chatbot:", response, "\n")
     elif choice == "2":
+        print("📖 Loading risk assessment knowledge base...")
+        all_docs = risk_assessment_collection.get()
+        questions = all_docs.get("documents", [])
+        
+        if not questions:
+            print("⚠️ No questions found in the risk assessment knowledge base.")
+            return
+        
+        user_answers = []
         print("📝 Answer the following Yes/No questions for risk analysis.")
+        
+        for question in questions:
+            answer = input(f"🤖 {question} (yes/no): ").strip().lower()
+            while answer not in ["yes", "no"]:
+                print("❌ Please answer with 'yes' or 'no'.")
+                answer = input(f"🤖 {question} (yes/no): ").strip().lower()
+            user_answers.append(answer)
+        
+        risk_level = assess_risk(user_answers)
+        print(f"\n📊 Your cybersecurity risk level is: {risk_level.upper()}\n")
+
+        # print("📖 Loading risk assessment knowledge base...")
+        # user_answers = []
+        # print("📝 Answer the following Yes/No questions for risk analysis.")
+        # for i in range(len(risk_assessment_collection.get()["ids"])):
+        #     print(risk_assessment_collection.get())
+        #     print(risk_assessment_collection.get()["ids"])
+        #     question = risk_assessment_collection.get(ids=[str(i)])[0]
+        #     answer = input(f"🤖 {question} (yes/no): ").strip().lower()
+        #     while answer not in ["yes", "no"]:
+        #         print("❌ Please answer with 'yes' or 'no'.")
+        #         answer = input(f"🤖 {question} (yes/no): ").strip().lower()
+        #     user_answers.append(answer)
+        
+        # risk_level = assess_risk(user_answers)
+        # print(f"\n📊 Your cybersecurity risk level is: {risk_level.upper()}\n")
     else:
         print("❌ Invalid choice. Please restart and enter 1 or 2.")
 
