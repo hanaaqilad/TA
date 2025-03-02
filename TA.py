@@ -7,10 +7,8 @@ import pypdf
 # Define the LLM model to be used
 llm_model = "llama3.1:8b"
 
-# Configure ChromaDB
+# Configure ChromaDB and reset every run
 chroma_db_path = os.path.join(os.getcwd(), "chroma_db")
-
-# Delete the existing ChromaDB storage if it exists (reset on every script run)
 if os.path.exists(chroma_db_path):
     shutil.rmtree(chroma_db_path)
 
@@ -43,7 +41,7 @@ embedding = ChromaDBEmbeddingFunction(
 collection_name = "rag_collection_demo"
 collection = chroma_client.get_or_create_collection(
     name=collection_name,
-    metadata={"description": "A collection for RAG with Ollama - Demo1"},
+    metadata={"description": "A collection for RAG with Ollama - Demo"},
     embedding_function=embedding  
 )
 
@@ -79,12 +77,6 @@ def add_pdf_to_collection(pdf_path, doc_id):
     print("📝 Stored document IDs:", all_docs["ids"])
 
 def process_pdf_file(pdf_path):
-    """
-    Process a single PDF file and add it to ChromaDB.
-    
-    Args:
-        pdf_path (str): Path to the PDF file.
-    """
     if not os.path.exists(pdf_path):
         print(f"⚠️ File {pdf_path} not found!")
         return
@@ -109,21 +101,11 @@ def query_chromadb(query_text, n_results=3):
     print("📌 Retrieved IDs:", results.get("ids", [])) 
     return results.get("documents", []), results.get("metadatas", [])
 
-# Function to interact with the Ollama LLM
 def query_ollama(prompt):
-    """
-    Send a query to Ollama and retrieve the response.
-    
-    Args:
-        prompt (str): The input prompt for Ollama.
-    
-    Returns:
-        str: The response from Ollama.
-    """
     llm = OllamaLLM(model=llm_model)
     return llm.invoke(prompt)
 
-# RAG pipeline: Combine ChromaDB and Ollama for Retrieval-Augmented Generation
+# RAG pipeline: Combine ChromaDB and Ollama for RAG
 def rag_pipeline(query_text):
     """
     Perform Retrieval-Augmented Generation (RAG) by combining ChromaDB and Ollama.
@@ -136,10 +118,11 @@ def rag_pipeline(query_text):
     """
     # Step 1: Retrieve relevant documents from ChromaDB
     retrieved_docs, metadata = query_chromadb(query_text)
+    context = " ".join([" ".join(doc) for doc in retrieved_docs]) if retrieved_docs else "No relevant documents found."
+
     # print("######## RAG PIPELINE ########")
     # print(retrieved_docs)
     # print(metadata)
-    context = " ".join([" ".join(doc) for doc in retrieved_docs]) if retrieved_docs else "No relevant documents found."
 
     # Step 2: Send the query along with the context to Ollama
     augmented_prompt = f"""
@@ -173,6 +156,7 @@ def rag_pipeline(query_text):
 # response = rag_pipeline(query)
 # print("######## Response from LLM ########\n", response)
 
+
 def chatbot():
     print("🟢 RAG Chatbot is running. Type 'exit' to quit.")
     while True:
@@ -182,6 +166,27 @@ def chatbot():
             break
         response = rag_pipeline(user_input)
         print("🤖 Chatbot:", response, "\n")
+
+def chatbot():
+    print("🤖 Welcome! Choose an option:")
+    print("1. Consult about cybersecurity risks --- You can ask anything related to cyber risks")
+    print("2. Risk assessment --- Assess your risk with multiple questions and get score!")
+    
+    choice = input("Which one you choose (1 or 2)? ")
+    
+    if choice == "1":
+        print("🟢 Ask me anything about cybersecurity risks! Type 'exit' to quit.")
+        while True:
+            user_input = input("👤 You: ")
+            if user_input.lower() == "exit":
+                print("🛑 Chatbot session ended.")
+                break
+            response = rag_pipeline(user_input)
+            print("🤖 Chatbot:", response, "\n")
+    elif choice == "2":
+        print("📝 Answer the following Yes/No questions for risk analysis.")
+    else:
+        print("❌ Invalid choice. Please restart and enter 1 or 2.")
 
 if __name__ == "__main__":
     chatbot()
