@@ -263,7 +263,7 @@ def rag_pipeline(collection, query_text):
     - Answer concisely but with enough details.
     - If the context does not contain the answer, state that explicitly.
     - If necessary, provide additional insights based on general knowledge.
-    - DO NOT mention where the information was retrieved from or reference specific sections of the document.
+    - Mention where the information was retrieved from or reference specific sections of the document.
 
     Answer:
     """
